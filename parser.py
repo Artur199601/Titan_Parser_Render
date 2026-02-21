@@ -428,7 +428,7 @@ async def parse_group_batch(client: TelegramClient, account_name: str, group_lin
     
     try:
         print(f"🚀 [{account_name}] ЗАШЕЛ В ГРУППУ И КАЧАЕТ СООБЩЕНИЯ!", flush=True)
-        async for msg in client.iter_messages(entity, limit=BATCH_SIZE + 1, max_id=bookmark if bookmark > 0 else 0):
+        async for msg in client.iter_messages(entity, limit=5, max_id=bookmark if bookmark > 0 else 0):
             if S.stop_event.is_set(): break
             count += 1
             if count > BATCH_SIZE:
@@ -680,6 +680,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
 
