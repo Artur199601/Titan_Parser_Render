@@ -354,7 +354,7 @@ async def process_user(client: TelegramClient, user_obj, messages: list, group_l
     should, reason = quick_filter(bio, messages)
     
     # НОВЫЙ ЛОГ: Теперь ты будешь видеть в Render каждого человека, которого он проверяет!
-    log.info(f"[{account_name}] Анализ: {real_name} | Итог фильтра: {reason}")
+    print(f"[{account_name}] Анализ: {real_name} | Итог фильтра: {reason}", flush=True)
     
     if not should: return False
     
@@ -427,6 +427,7 @@ async def parse_group_batch(client: TelegramClient, account_name: str, group_lin
     oldest_id, has_more, count = None, False, 0
     
     try:
+        print(f"🚀 [{account_name}] ЗАШЕЛ В ГРУППУ И КАЧАЕТ СООБЩЕНИЯ!", flush=True)
         async for msg in client.iter_messages(entity, limit=BATCH_SIZE + 1, max_id=bookmark if bookmark > 0 else 0):
             if S.stop_event.is_set(): break
             count += 1
@@ -679,5 +680,6 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
