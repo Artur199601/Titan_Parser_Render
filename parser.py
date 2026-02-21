@@ -204,7 +204,7 @@ def load_proxies() -> list:
             
         try:
             port = int(port)
-            proxies.append((socks.SOCKS5, host, port, True, user, passwd))
+            proxies.append((socks.HTTP, host, port, True, user, passwd))
         except ValueError:
             continue
             
@@ -634,3 +634,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
