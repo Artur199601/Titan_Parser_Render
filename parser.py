@@ -10,6 +10,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
 from telethon import TelegramClient, events
 from telethon.errors import (
     FloodWaitError, ChatAdminRequiredError, ChannelPrivateError
@@ -25,18 +26,13 @@ import socks
 # НАСТРОЙКИ (ВШИТЫЕ ДАННЫЕ)
 # ══════════════════════════════════════════════════════════════
 
-# Публичные ключи от официального Android (Неубиваемые)
 API_ID = 6
 API_HASH = "eb06d4abfb49dc3eeb1aeb98ae0f581e"
 
-# Твой управляющий бот и твой личный Telegram ID
 BOT_TOKEN = "8177768255:AAECx4EjWSadym2FAjXEZ7yguP57VI8Cmx0"
 ADMIN_ID = 1568924415
 
-# Нейросети (Используем Groq как основной мотор)
 GROQ_API_KEY = "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"
-OPENAI_API_KEY = ""
-GEMINI_API_KEY = ""
 
 BASE_DIR = Path(__file__).parent
 OUTPUT_DIR = BASE_DIR / "output"
@@ -49,7 +45,8 @@ SESSIONS_DIR.mkdir(exist_ok=True)
 
 SCORE_THRESHOLD = 6
 EXPORT_CHUNK = 1000
-BATCH_SIZE = 200
+# ИСПРАВЛЕНИЕ: Ставим 40, чтобы HTTP-прокси не рвали связь, и скрипт летал
+BATCH_SIZE = 40 
 ACCOUNT_REST_MIN = 300
 ACCOUNT_REST_MAX = 900
 
@@ -190,7 +187,6 @@ def load_proxies() -> list:
         line = line.strip()
         if not line or line.startswith("#"): continue
         
-        # Поддержка формата user:pass@ip:port
         if '@' in line:
             auth, ip_port = line.split('@')
             user, passwd = auth.split(':')
@@ -226,11 +222,16 @@ def classify_activity(status) -> str:
         except Exception: pass
     return "cold"
 
-AI_PROMPT = """Ты — снайпер B2B продаж инъекционных косметологических препаратов.
-Продукт: корейские филлеры и ботулотоксины.
+# ИСПРАВЛЕНИЕ: Промпт переписан жестко под поиск покупателей препаратов
+AI_PROMPT = """Ты — эксперт по поиску оптовых клиентов (косметологов) для закупки препаратов.
+Твоя задача: найти профессионалов.
 
-БЕРЁМ (Score 5-10): Косметологи, хирурги, дерматологи, владельцы клиник закупающие препараты.
-НЕ БЕРЁМ (Score 0-3): Обычные клиенты, бровисты, мастера ногтевого сервиса, блогеры, продавцы CRM.
+КРИТИЧЕСКИ ВАЖНО: 
+- Если человек ищет ПОСТАВЩИКОВ, запрашивает ПРАЙСЫ или ищет препараты (Revi, Novocutan, Meso-Xanthin, Profhilo и др.) — это 10/10! 
+- Даже если в Bio написано "блог" или "мама", но в сообщениях есть запрос на закупку или обращение "коллеги" — это ТОЧНО косметолог.
+
+БЕРЁМ (Score 8-10): Те, кто покупает, колет, ищет препараты или ведет прием.
+НЕ БЕРЁМ (Score 0-3): Пациенты, которые ищут мастера ("посоветуйте мне"), или вообще левые люди.
 
 Профиль:
 Имя: {name}
@@ -239,9 +240,10 @@ Bio: {bio}
 {messages}
 
 Ответь ТОЛЬКО JSON:
-{{"score": 8, "reason": "краткая причина"}}"""
+{{"score": 10, "reason": "краткая причина"}}"""
 
-PLUS_WORDS = ["косметолог", "косметология", "инъекционист", "эстетист", "дерматолог", "филлер", "ботокс", "биоревитализация", "мезотерапия", "уколы красоты"]
+# ИСПРАВЛЕНИЕ: Добавлены специфические препараты для фильтра
+PLUS_WORDS = ["косметолог", "косметология", "инъекционист", "эстетист", "дерматолог", "филлер", "ботокс", "биоревитализация", "мезотерапия", "уколы красоты", "реви", "новокутан", "мезоксантин", "профайло", "радиесс", "белотеро", "ювидерм", "стилейдж", "закупка", "поставщик", "прайс", "коллеги"]
 MINUS_WORDS = ["мастер маникюра", "бровист", "лэшмейкер", "тату мастер", "продаю аппараты", "посоветуйте косметолога", "клиент"]
 
 def quick_filter(bio: str, messages: list) -> tuple:
@@ -264,16 +266,15 @@ def quick_filter(bio: str, messages: list) -> tuple:
     
     return True, "нет маркеров -> ИИ"
 
+# ИСПРАВЛЕНИЕ: Ошибка прокси в Groq убита через httpx
 async def _call_groq(profile: dict) -> Optional[dict]:
     if not GROQ_API_KEY: return None
     try:
         import httpx
         from groq import AsyncGroq
         
-        # Это «прямое» соединение, оно не даст Гроку залезть в твои телеграм-прокси
         async with httpx.AsyncClient() as http_client:
             client = AsyncGroq(api_key=GROQ_API_KEY, http_client=http_client)
-            
             prompt = AI_PROMPT.format(
                 name=profile.get("name", ""),
                 bio=profile.get("bio", "") or "не указан",
@@ -341,25 +342,21 @@ async def process_user(client: TelegramClient, user_obj, messages: list, group_l
     
     user_id = user_obj.id
     activity = classify_activity(getattr(user_obj, "status", None))
-    
-    # ИСПРАВЛЕНИЕ: Если статус скрыт настройками приватности, не выкидываем, а считаем "теплым"
     if activity == "cold": activity = "warm" 
     
     username = getattr(user_obj, "username", "") or ""
     real_name = " ".join(filter(None, [getattr(user_obj, "first_name", ""), getattr(user_obj, "last_name", "")])).strip() or "Без имени"
-    
     bio = getattr(user_obj, "about", "") or ""
+    
     if not bio:
         try:
             full = await safe_request(client.get_entity(user_id), label=f"bio {user_id}")
             bio = getattr(full, "about", "") or "" if full else ""
-        except Exception: bio = ""
-        await asyncio.sleep(random.uniform(1.0, 2.5))
+            await asyncio.sleep(random.uniform(1.0, 2.5))
+        except Exception: pass
         
     should, reason = quick_filter(bio, messages)
-    
-    # НОВЫЙ ЛОГ: Теперь ты будешь видеть в Render каждого человека, которого он проверяет!
-    print(f"[{account_name}] Анализ: {real_name} | Итог фильтра: {reason}", flush=True)
+    print(f"[{account_name}] Анализ: {real_name} | Итог: {reason}", flush=True)
     
     if not should: return False
     
@@ -367,62 +364,24 @@ async def process_user(client: TelegramClient, user_obj, messages: list, group_l
     score = result.get("score", 0)
     ai_reason = result.get("reason", "")
     
-    save_lead({
-        "user_id": user_id, "username": username, "real_name": real_name,
-        "bio": bio, "messages": json.dumps(messages, ensure_ascii=False),
-        "score": score, "ai_reason": ai_reason, "activity": activity, "group_src": group_link,
-    })
-    
-    is_quality = score >= SCORE_THRESHOLD
-    if is_quality:
+    if score >= SCORE_THRESHOLD:
+        print(f"💎 НАЙДЕН ЛИД: {real_name} | Оценка: {score} | ИИ: {ai_reason}", flush=True)
+        save_lead({
+            "user_id": user_id, "username": username, "real_name": real_name,
+            "bio": bio, "messages": json.dumps(messages, ensure_ascii=False),
+            "score": score, "ai_reason": ai_reason, "activity": activity, "group_src": group_link,
+        })
         S.found_count += 1
         if S.found_count % 20 == 0:
             elapsed = time.time() - S.session_start
             speed = S.found_count / (elapsed / 3600) if elapsed > 0 else 0
             await notify(f"💓 Ритм: {S.found_count} лидов\n⚡️ Скорость: {speed:.0f} л/ч\n📍 {group_link}\n👀 Обработано: {S.processed_count}")
+        return True
     
     S.processed_count += 1
-    return is_quality
-    
-    user_id = user_obj.id
-    activity = classify_activity(getattr(user_obj, "status", None))
-    if activity == "cold": return False
-    
-    username = getattr(user_obj, "username", "") or ""
-    real_name = " ".join(filter(None, [getattr(user_obj, "first_name", ""), getattr(user_obj, "last_name", "")])).strip() or "Без имени"
-    
-    bio = getattr(user_obj, "about", "") or ""
-    if not bio:
-        try:
-            full = await safe_request(client.get_entity(user_id), label=f"bio {user_id}")
-            bio = getattr(full, "about", "") or "" if full else ""
-        except Exception: bio = ""
-        await asyncio.sleep(random.uniform(1.0, 2.5))
-        
-    should, reason = quick_filter(bio, messages)
-    if not should: return False
-    
-    result = await analyze_profile({"name": real_name, "bio": bio, "messages": messages})
-    score = result.get("score", 0)
-    ai_reason = result.get("reason", "")
-    
-    save_lead({
-        "user_id": user_id, "username": username, "real_name": real_name,
-        "bio": bio, "messages": json.dumps(messages, ensure_ascii=False),
-        "score": score, "ai_reason": ai_reason, "activity": activity, "group_src": group_link,
-    })
-    
-    is_quality = score >= SCORE_THRESHOLD
-    if is_quality:
-        S.found_count += 1
-        if S.found_count % 20 == 0:
-            elapsed = time.time() - S.session_start
-            speed = S.found_count / (elapsed / 3600) if elapsed > 0 else 0
-            await notify(f"💓 Ритм: {S.found_count} лидов\n⚡️ Скорость: {speed:.0f} л/ч\n📍 {group_link}\n👀 Обработано: {S.processed_count}")
-    
-    S.processed_count += 1
-    return is_quality
+    return False
 
+# ИСПРАВЛЕНИЕ: Починена логика завершения группы и лимиты
 async def parse_group_batch(client: TelegramClient, account_name: str, group_link: str) -> bool:
     entity = await safe_request(client.get_entity(group_link), label=group_link)
     if not entity: return False
@@ -432,13 +391,10 @@ async def parse_group_batch(client: TelegramClient, account_name: str, group_lin
     oldest_id, has_more, count = None, False, 0
     
     try:
-        print(f"🚀 [{account_name}] ЗАШЕЛ В ГРУППУ И КАЧАЕТ СООБЩЕНИЯ!", flush=True)
-        async for msg in client.iter_messages(entity, limit=5, max_id=bookmark if bookmark > 0 else 0):
+        print(f"🚀 [{account_name}] ЗАШЕЛ В ГРУППУ (Лимит: {BATCH_SIZE})", flush=True)
+        async for msg in client.iter_messages(entity, limit=BATCH_SIZE, max_id=bookmark if bookmark > 0 else 0):
             if S.stop_event.is_set(): break
             count += 1
-            if count > BATCH_SIZE:
-                has_more = True
-                break
             if oldest_id is None or msg.id < oldest_id: oldest_id = msg.id
             if not msg.sender_id or not msg.text: continue
             
@@ -449,8 +405,12 @@ async def parse_group_batch(client: TelegramClient, account_name: str, group_lin
             if uid not in user_objects and msg.sender: user_objects[uid] = msg.sender
             await smart_sleep(0.2, 0.6)
             
+        # КЛЮЧЕВОЙ ФИКС: Если мы скачали 40 (или больше), значит история еще не закончилась
+        if count >= BATCH_SIZE:
+            has_more = True
+            
     except Exception as e:
-        log.warning("[%s] Ошибка %s: %s", account_name, group_link, e)
+        print(f"❌ Ошибка в группе {group_link}: {e}", flush=True)
         if oldest_id: save_bookmark(group_link, oldest_id)
         return True
 
@@ -638,9 +598,10 @@ def register_handlers(bot: TelegramClient):
     @bot.on(events.NewMessage(pattern=r"(?i)^/clear_yes$"))
     async def _clear_yes(event):
         if event.sender_id == ADMIN_ID and (time.time() - S.pending_clear.get(event.sender_id, 0) < 30):
-            with sqlite3.connect(str(DB_PATH)) as conn: conn.executescript("DELETE FROM leads; DELETE FROM seen_users; DELETE FROM group_bookmarks;")
+            with sqlite3.connect(str(DB_PATH)) as conn: conn.executescript("DELETE FROM leads; DELETE FROM seen_users; DELETE FROM group_bookmarks; DELETE FROM parsed_groups;")
             S.found_count = S.processed_count = 0
-            await event.reply("♻️ Очищено.")
+            S.queue.clear() # ИСПРАВЛЕНИЕ: Очищаем очередь при сбросе
+            await event.reply("♻️ Очищено полностью.")
 
 async def _run_parser():
     S.is_running, S.session_start, S.found_count, S.processed_count = True, time.time(), 0, 0
@@ -685,9 +646,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
-
-
-
-
