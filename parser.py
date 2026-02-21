@@ -267,23 +267,28 @@ def quick_filter(bio: str, messages: list) -> tuple:
 async def _call_groq(profile: dict) -> Optional[dict]:
     if not GROQ_API_KEY: return None
     try:
+        import httpx
         from groq import AsyncGroq
-        client = AsyncGroq(api_key=GROQ_API_KEY)
-        prompt = AI_PROMPT.format(
-            name=profile.get("name", ""),
-            bio=profile.get("bio", "") or "не указан",
-            messages="\n".join(profile.get("messages", [])[:10]) or "нет сообщений"
-        )
-        r = await client.chat.completions.create(
-            messages=[{"role": "user", "content": prompt}],
-            model="llama-3.3-70b-versatile",
-            temperature=0.1,
-            max_tokens=120
-        )
-        text = re.sub(r"```json|```", "", r.choices[0].message.content).strip()
-        return json.loads(text)
+        
+        # Это «прямое» соединение, оно не даст Гроку залезть в твои телеграм-прокси
+        async with httpx.AsyncClient() as http_client:
+            client = AsyncGroq(api_key=GROQ_API_KEY, http_client=http_client)
+            
+            prompt = AI_PROMPT.format(
+                name=profile.get("name", ""),
+                bio=profile.get("bio", "") or "не указан",
+                messages="\n".join(profile.get("messages", [])[:10]) or "нет сообщений"
+            )
+            r = await client.chat.completions.create(
+                messages=[{"role": "user", "content": prompt}],
+                model="llama-3.3-70b-versatile",
+                temperature=0.1,
+                max_tokens=120
+            )
+            text = re.sub(r"```json|```", "", r.choices[0].message.content).strip()
+            return json.loads(text)
     except Exception as e:
-        log.warning("Groq error: %s", e)
+        print(f"❌ ОШИБКА GROQ: {e}", flush=True)
         return None
 
 def _heuristic(profile: dict) -> dict:
@@ -680,6 +685,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
 
