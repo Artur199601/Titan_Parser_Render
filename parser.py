@@ -336,6 +336,51 @@ async def process_user(client: TelegramClient, user_obj, messages: list, group_l
     
     user_id = user_obj.id
     activity = classify_activity(getattr(user_obj, "status", None))
+    
+    # ИСПРАВЛЕНИЕ: Если статус скрыт настройками приватности, не выкидываем, а считаем "теплым"
+    if activity == "cold": activity = "warm" 
+    
+    username = getattr(user_obj, "username", "") or ""
+    real_name = " ".join(filter(None, [getattr(user_obj, "first_name", ""), getattr(user_obj, "last_name", "")])).strip() or "Без имени"
+    
+    bio = getattr(user_obj, "about", "") or ""
+    if not bio:
+        try:
+            full = await safe_request(client.get_entity(user_id), label=f"bio {user_id}")
+            bio = getattr(full, "about", "") or "" if full else ""
+        except Exception: bio = ""
+        await asyncio.sleep(random.uniform(1.0, 2.5))
+        
+    should, reason = quick_filter(bio, messages)
+    
+    # НОВЫЙ ЛОГ: Теперь ты будешь видеть в Render каждого человека, которого он проверяет!
+    log.info(f"[{account_name}] Анализ: {real_name} | Итог фильтра: {reason}")
+    
+    if not should: return False
+    
+    result = await analyze_profile({"name": real_name, "bio": bio, "messages": messages})
+    score = result.get("score", 0)
+    ai_reason = result.get("reason", "")
+    
+    save_lead({
+        "user_id": user_id, "username": username, "real_name": real_name,
+        "bio": bio, "messages": json.dumps(messages, ensure_ascii=False),
+        "score": score, "ai_reason": ai_reason, "activity": activity, "group_src": group_link,
+    })
+    
+    is_quality = score >= SCORE_THRESHOLD
+    if is_quality:
+        S.found_count += 1
+        if S.found_count % 20 == 0:
+            elapsed = time.time() - S.session_start
+            speed = S.found_count / (elapsed / 3600) if elapsed > 0 else 0
+            await notify(f"💓 Ритм: {S.found_count} лидов\n⚡️ Скорость: {speed:.0f} л/ч\n📍 {group_link}\n👀 Обработано: {S.processed_count}")
+    
+    S.processed_count += 1
+    return is_quality
+    
+    user_id = user_obj.id
+    activity = classify_activity(getattr(user_obj, "status", None))
     if activity == "cold": return False
     
     username = getattr(user_obj, "username", "") or ""
@@ -634,4 +679,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
