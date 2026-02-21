@@ -30,7 +30,7 @@ API_ID = 6
 API_HASH = "eb06d4abfb49dc3eeb1aeb98ae0f581e"
 
 # Твой управляющий бот и твой личный Telegram ID
-BOT_TOKEN = "8177768255:AAELNFdbH9BHcohyOB4pbLJEh3GuEKX05s4"
+BOT_TOKEN = "8177768255:AAECx4EjWSadym2FAjXEZ7yguP57VI8Cmx0"
 ADMIN_ID = 1568924415
 
 # Нейросети (Используем Groq как основной мотор)
@@ -680,6 +680,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
 
