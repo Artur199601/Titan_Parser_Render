@@ -1,414 +1,213 @@
-import os
-import re
-import asyncio
-import random
-import sqlite3
-import json
-import time
-from datetime import datetime, timezone, timedelta
-from pathlib import Path
-
+import os, re, asyncio, random, sqlite3, json, time
 from telethon import TelegramClient, events, Button
+from telethon.errors import FloodWaitError, UserAlreadyParticipantError
 from telethon.tl.functions.users import GetFullUserRequest
-from telethon.tl.types import User, UserStatusEmpty, UserStatusOffline
+from telethon.tl.functions.channels import JoinChannelRequest
 import socks
 from openai import AsyncOpenAI
+from pathlib import Path
 
-# ══════════════════════════════════════════════════════════════
-# КОНФИГУРАЦИЯ
-# ══════════════════════════════════════════════════════════════
-
+# === КОНФИГУРАЦИЯ ===
 API_ID = 6
 API_HASH = "eb06d4abfb49dc3eeb1aeb98ae0f581e"
 BOT_TOKEN = "8177768255:AAECx4EjWSadym2FAjXEZ7yguP57VI8Cmx0"
 ADMIN_ID = 1568924415
-OPENAI_API_KEY = "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" # <--- НЕ ЗАБУДЬ КЛЮЧ!
-
-DB_PATH = Path("leads.db")
-SESSIONS_DIR = Path("sessions")
-PROXIES_FILE = Path("proxies.txt")
-BATCH_SIZE = 150  
+OPENAI_API_KEY = "Sk-proj-xshkzyA-CoAp-sqSYP68CJkbkoDQlwe_O24YhFM3cPHcCZIF19au8Gl4QYgWuGnyYL2cKkdcXyT3BlbkFJfkGcb32wVMsxtzErRGgLo-NpgKAxjdUawKLKLl5iORBic_pPqNmeUOG0Cqy5RaKpzVuBV2DY8A"
 
 openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+DB_PATH = "leads.db"
 
-# ══════════════════════════════════════════════════════════════
-# БРОНЕБОЙНЫЙ ФИЛЬТР МУСОРА (Убивает 100% шлак до ИИ)
-# ══════════════════════════════════════════════════════════════
+# 🛑 СВЕТОФОР ДЛЯ БАЗЫ ДАННЫХ (Защита от Locked)
+db_lock = asyncio.Lock()
 
-MINUS_WORDS = [
-    # ЭСТЕТИКА, АППАРАТКА И ТЕЛО
-    "эстет", "эстетист", "эстетика", "аппаратная", "аппаратный", "аппаратка", "аппаратный массаж",
-    "массаж", "массажист", "чистка лица", "чистки", "чистку", "smas", "смас", "lpg", "rf-лифтинг", "рф-лифтинг", 
-    "микротоки", "уходовая", "лазер", "лазерная", "эпиляция", "депиляция", "электроэпиляция",
-    "косметик", "карбокситерапия", "гидропилинг", "кавитация", "прессотерапия", "криолиполиз", 
-    "вакуумный", "миостимуляция", "эндосфера", "b-flexy", "воск", "восковая", "фейсфитнес", 
-    "тейпирование", "тейпы", "пигментация", "пигментации", "bbl",
+MINUS_WORDS = ["прыщи", "сыпь", "ребенок", "аппарат", "оборудование", "маникюр", "курсы", "аренда", "сдам кабинет"]
 
-    # ЧИСТАЯ ДЕРМАТОЛОГИЯ И БОЛЕЗНИ
-    "псориаз", "экзема", "дерматит", "розацеа", "акне", "постакне", "лечение акне", "подолог", 
-    "бородавки", "папилломы", "грибок", "трихолог", "выпадение волос", "алопеция", "себорея", 
-    "лишай", "купероз", "витилиго", "меланома", "невус", "родинки", "удаление родинок", 
-    "удаление бородавок", "дерматоскоп", "дерматоскопия", "соскоб", "криодеструкция", 
-    "венеролог", "миколог", "роаккутан", "акнекутан", "изотретиноин", "базирон", "скинорен", 
-    "эффезел", "зеркалин", "демодекс",
+def is_trash(text: str) -> bool:
+    return any(m in text.lower() for m in MINUS_WORDS)
 
-    # БЫТОВЫЕ ПАЦИЕНТЫ И МАМАШИ
-    "прыщи", "прыщ", "прыщей", "сыпь", "аллергия", "аллергическая", "ребенок", "ребенка", "дочь", "сын", 
-    "муж", "подросток", "домашний уход", "умывалка", "крем", "bb крем", "вв крем", "сыворотка", "пенка",
+AI_PROMPT = """Ты аналитик Fillers_Beauty. Ищи косметологов. Если мастер/врач - HOT/WARM. Если пациент/спам - TRASH. JSON: {"category": "HOT/WARM/TRASH"}"""
 
-    # БЬЮТИ-СПАМЕРЫ: ОБОРУДОВАНИЕ И КУРСЫ
-    "аппарат", "аппараты", "оборудование", "оборудования", "поставляем", "обучение", "обучения", 
-    "видео лекции", "курс", "курсы", "соцконтракт", "соц.контракт", "государства", "аренда", "помещение",
-
-    # ДРУГОЙ БЬЮТИ-МУСОР
-    "маникюр", "педикюр", "ногти", "nail", "бровист", "брови", "lash", "лэшмейкер", "ресницы", 
-    "парикмахер", "стилист", "визажист", "makeup", "тату", "тату-мастер", "татуаж", "перманент", 
-    "шугаринг", "колорист", "барбер", "лами", "ламинирование", "наращивание",
-
-    # АДМИНЫ И СПАМ
-    "крипто", "инвестиции", "заработок", "игры", "посоветуйте мастера", "ищу мастера", 
-    "подскажите косметолога", "менеджер", "админ", "запись по телефону", "запись в директ",
-    "прайс-лист в шапке"
-]
-
-def hard_filter(text: str, username: str) -> tuple:
-    # Теперь мы НЕ пропускаем никого в HOT автоматом.
-    # Если есть минус-слово - выкидываем. Все остальные идут думать в ИИ!
-    t = (text + " " + username).lower()
-    if any(m in t for m in MINUS_WORDS):
-        return "TRASH", "Мусор по словарю"
-    return None, None 
-
-# ══════════════════════════════════════════════════════════════
-# УМНЫЙ МОЗГ ИИ (АНАЛИЗИРУЕТ ВСЕХ ПОДРЯД КАК ЖИВОЙ ЧЕЛОВЕК)
-# ══════════════════════════════════════════════════════════════
-
-AI_PROMPT = """Ты — опытный, безжалостный и вдумчивый аналитик B2B-продаж. 
-Твоя компания: Fillers_Beauty (оптовая и розничная продажа косметологических препаратов: филлеры, токсины, липолитики).
-
-Твоя задача: анализировать каждое входящее сообщение как ЖИВОЙ ЧЕЛОВЕК. У тебя нет лимита на токены, думай глубоко. Сопоставляй Имя, Юзернейм, Bio и сам текст.
-Ищи РЕАЛЬНЫХ КЛИЕНТОВ (косметологов-инъекционистов, врачей, клиники), которые колют препараты и потенциально могут закупать их у нас.
-
-КАТЕГОРИИ КЛИЕНТОВ:
-1. HOT (Прямой клиент): Врач, инъекционист, клиника. Ищет закупку, спрашивает прайсы, ищет поставщиков ботокса/филлеров.
-2. WARM (Потенциальный клиент): Врач/мастер. Обсуждает техники инъекций, разведение препаратов, осложнения после филлеров, делится профессиональным опытом с коллегами.
-
-3. TRASH (Мусор - БЕЗЖАЛОСТНО УДАЛЯТЬ):
-   - Обычные пациенты (жалобы на прыщи, аллергию, сыпь у детей, ищут крем, спрашивают "чем мазать", "посоветуйте мастера").
-   - Конкуренты (те, кто сами спамят: "продам филлеры оптом", "лучшие цены на токсины").
-   - Инфоцыгане, продавцы курсов, арендодатели кабинетов, продавцы оборудования и аппаратов.
-
-ГЛАВНОЕ ПРАВИЛО АНАЛИЗА:
-Смотри на картину целиком. Если сообщение короткое (например, "Цена?", "Спасибо", "Где купить?"), НЕ СПЕШИ кидать в TRASH. Внимательно изучи Bio и Имя! 
-- Если человек пишет "Спасибо", а в Bio написано "Врач-косметолог, контурная пластика" — это наш человек (WARM/HOT). 
-- Если пишет "Где купить?", а профиль пустой или бытовой — это может быть пациент, анализируй контекст беседы.
-Будь безжалостен к пациентам и конкурентам! Пропускай только тех, кто реально держит в руках шприц.
-
-Ответь строго в JSON:
-{{
-  "thought_process": "Глубокий анализ: вижу короткий текст 'Спасибо', но в Bio указано 'инъекционист, Москва', значит это реальный врач, берем в WARM...",
-  "category": "HOT" 
-}}"""
-
-async def get_ai_category(profile: dict) -> dict:
+async def get_ai_category(text, bio):
     try:
-        prompt = AI_PROMPT.format(
-            name=profile['name'], username=profile['username'],
-            bio=profile['bio'], messages="\n".join(profile['messages'])
-        )
-        response = await openai_client.chat.completions.create(
+        res = await openai_client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
-            temperature=0.1
+            messages=[{"role": "user", "content": f"{AI_PROMPT}\nТекст: {text}\nBio: {bio}"}],
+            response_format={"type": "json_object"}
         )
-        return json.loads(response.choices[0].message.content)
-    except Exception as e: 
-        print(f"Ошибка ИИ: {e}")
-        return {"category": "TRASH", "thought_process": "error"}
-
-# ══════════════════════════════════════════════════════════════
-# ЯДРО ПАРСЕРА
-# ══════════════════════════════════════════════════════════════
+        return json.loads(res.choices[0].message.content).get('category', 'TRASH')
+    except: return "TRASH"
 
 class State:
     queue = asyncio.Queue()
     is_running = False
     bot = None
     stop_event = asyncio.Event()
-    waiting_for_links = False
-    leads_session_total = 0
-    leads_hot = 0
-    leads_warm = 0
+    leads_total = 0
+    seen_total = 0
 
 S = State()
 
-def init_db():
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.executescript("""
-        CREATE TABLE IF NOT EXISTS leads (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER UNIQUE, username TEXT, real_name TEXT, 
-            bio TEXT, trigger_text TEXT, category TEXT, group_src TEXT, created_at INTEGER
-        );
-        CREATE TABLE IF NOT EXISTS seen (user_id INTEGER PRIMARY KEY);
-        CREATE TABLE IF NOT EXISTS bookmarks (link TEXT PRIMARY KEY, last_id INTEGER);
-        """)
+# === БЕЗОПАСНАЯ РАБОТА С БАЗОЙ ===
+async def db_execute(query, params=(), fetchone=False):
+    async with db_lock:
+        with sqlite3.connect(DB_PATH, timeout=30) as conn:
+            cur = conn.execute(query, params)
+            if fetchone: return cur.fetchone()
+            conn.commit()
 
-async def check_pulse():
-    if S.leads_session_total > 0 and S.leads_session_total % 100 == 0:
-        msg = (
-            f"💓 **ПУЛЬС ПАРСЕРА** 💓\n\n"
-            f"Собрано новых лидов: **{S.leads_session_total}**\n"
-            f"🔥 Горячие (HOT): {S.leads_hot}\n"
-            f"🤔 Под вопросом (WARM): {S.leads_warm}\n\n"
-            f"Машина работает стабильно, ИИ думает над каждым. ⚙️"
-        )
-        try:
-            await S.bot.send_message(ADMIN_ID, msg)
-        except: pass
-
-async def process_user(client, user_obj, messages, group_link, acc_name):
-    if not isinstance(user_obj, User): return 
-    if getattr(user_obj, 'bot', False): return 
-    if getattr(user_obj, 'is_self', False): return 
-    
-    status = getattr(user_obj, 'status', None)
-    if isinstance(status, UserStatusEmpty):
-        return 
-    if isinstance(status, UserStatusOffline):
-        now = datetime.now(timezone.utc)
-        if now - status.was_online > timedelta(days=30):
-            return 
-            
-    uid = user_obj.id
-    username = getattr(user_obj, 'username', '') or ''
-    name = f"{getattr(user_obj, 'first_name', '')} {getattr(user_obj, 'last_name', '')}".strip()
-    trigger_text = messages[0] if messages else ""
-    
-    bio = ""
+# === ЛОГИКА АККАУНТА ===
+async def account_worker(name, session_path):
+    client = TelegramClient(str(session_path), API_ID, API_HASH)
     try:
-        full = await client(GetFullUserRequest(uid))
-        bio = getattr(full.full_user, 'about', '') or ""
-    except: pass
-    
-    full_content = f"{name} {username} {bio} {' '.join(messages)}"
-    
-    # 1. Сначала отсекаем очевидный мусор бесплатно
-    category, reason = hard_filter(full_content, username)
-    
-    # 2. Если это не мусор — отправляем ВСЁ в нейросеть
-    if category is None:
-        res = await get_ai_category({"name": name, "username": username, "bio": bio, "messages": messages})
-        category = res.get('category', 'TRASH').upper()
-        reason = f"ИИ: {res.get('thought_process', '')[:150]}..."
+        await client.connect()
+        if not await client.is_user_authorized(): return
+    except Exception: return
 
-    # 3. Сохраняем только лучших
-    if category in ['HOT', 'WARM']:
-        with sqlite3.connect(DB_PATH) as conn:
-            try:
-                conn.execute("INSERT INTO leads VALUES (NULL,?,?,?,?,?,?,?,?)",
-                            (uid, username, name, bio, trigger_text, category, group_link, int(time.time())))
-                
-                S.leads_session_total += 1
-                if category == 'HOT': S.leads_hot += 1
-                elif category == 'WARM': S.leads_warm += 1
-                
-                print(f"💎 [{acc_name}] {category}: {name} | {reason}", flush=True)
-                await check_pulse()
-            except sqlite3.IntegrityError:
-                pass 
-
-async def account_worker(name, session_path, proxy):
-    client = TelegramClient(str(session_path), API_ID, API_HASH, proxy=proxy)
-    await client.connect()
-    if not await client.is_user_authorized():
-        print(f"❌ {name} не авторизован"); return
-    
     while not S.stop_event.is_set():
+        link = await S.queue.get()
         try:
-            link = await S.queue.get()
-            
-            last_id = 0
-            with sqlite3.connect(DB_PATH) as conn:
-                row = conn.execute("SELECT last_id FROM bookmarks WHERE link=?", (link,)).fetchone()
-                if row: last_id = row[0]
-
+            # 1. БЕЗОПАСНЫЙ ВХОД В ГРУППУ
             entity = await client.get_entity(link)
+            if hasattr(entity, 'left') and entity.left:
+                await asyncio.sleep(random.uniform(5, 15)) 
+                try: 
+                    await client(JoinChannelRequest(entity))
+                except UserAlreadyParticipantError: pass
+                except FloodWaitError as e: await asyncio.sleep(e.seconds)
+                except Exception: pass
+
+            # Получаем закладку (глубину)
+            row = await db_execute("SELECT last_id FROM bookmarks WHERE link=?", (link,), fetchone=True)
+            last_id = row[0] if row else 0
+
+            msgs_found = 0
             
-            messages_processed = 0
-            oldest_msg_id = last_id
+            # 2. ПАРСИМ ГЛУБОКО ВНИЗ (ПО 200 СООБЩЕНИЙ)
+            async for msg in client.iter_messages(entity, limit=200, offset_id=last_id):
+                if S.stop_event.is_set(): break
+                last_id = msg.id
+                msgs_found += 1
 
-            async for msg in client.iter_messages(entity, limit=BATCH_SIZE, offset_id=last_id):
-                if S.stop_event.is_set(): break 
+                if not msg.sender_id or not msg.text or is_trash(msg.text): continue
+
+                is_seen = await db_execute("SELECT 1 FROM seen WHERE user_id=?", (msg.sender_id,), fetchone=True)
+                if is_seen: continue
                 
-                messages_processed += 1
-                oldest_msg_id = msg.id 
+                await db_execute("INSERT OR IGNORE INTO seen VALUES (?)", (msg.sender_id,))
+                S.seen_total += 1
 
-                if not msg.sender_id or not msg.text: continue
-                
-                with sqlite3.connect(DB_PATH) as conn:
-                    if conn.execute("SELECT 1 FROM seen WHERE user_id=?", (msg.sender_id,)).fetchone(): continue
-                    conn.execute("INSERT OR IGNORE INTO seen VALUES (?)", (msg.sender_id,))
-                
-                if msg.sender:
-                    await process_user(client, msg.sender, [msg.text], link, name)
-                await asyncio.sleep(random.uniform(1, 3))
+                # 3. УМНЫЙ КЭШ BIO (ЗАЩИТА ОТ БАНА)
+                cached_bio = await db_execute("SELECT bio FROM user_bios WHERE user_id=?", (msg.sender_id,), fetchone=True)
+                if cached_bio is not None:
+                    bio = cached_bio[0]
+                else:
+                    await asyncio.sleep(random.uniform(1.5, 3)) # Легкая антифлуд пауза
+                    try:
+                        full = await client(GetFullUserRequest(msg.sender_id))
+                        bio = full.full_user.about or ""
+                        await db_execute("INSERT INTO user_bios VALUES (?, ?)", (msg.sender_id, bio))
+                    except FloodWaitError as e:
+                        print(f"⚠️ {name} поймал FloodWait. Спим {e.seconds} сек.")
+                        await asyncio.sleep(e.seconds)
+                        bio = ""
+                    except Exception:
+                        bio = ""
+                        await db_execute("INSERT INTO user_bios VALUES (?, ?)", (msg.sender_id, bio))
 
-            if messages_processed > 0 and oldest_msg_id != last_id:
-                with sqlite3.connect(DB_PATH) as conn:
-                    conn.execute("INSERT OR REPLACE INTO bookmarks (link, last_id) VALUES (?, ?)", (link, oldest_msg_id))
+                # 4. ОТПРАВКА В ИИ
+                cat = await get_ai_category(msg.text, bio)
+                if cat in ['HOT', 'WARM']:
+                    await db_execute("INSERT OR IGNORE INTO leads (user_id, bio, trigger_text, category, group_src, created_at) VALUES (?,?,?,?,?,?)",
+                                    (msg.sender_id, bio, msg.text[:100], cat, link, int(time.time())))
+                    S.leads_total += 1
+                    
+                    # 5. ПУЛЬС КАЖДЫЕ 100 ЛИДОВ
+                    if S.leads_total % 100 == 0:
+                        await S.bot.send_message(ADMIN_ID, f"📈 ПУЛЬС: Найдено {S.leads_total} лидов.\nПроверено: {S.seen_total}")
 
-            if not S.stop_event.is_set():
+            # Сохраняем закладку
+            await db_execute("INSERT OR REPLACE INTO bookmarks (link, last_id) VALUES (?, ?)", (link, last_id))
+
+            # 6. УМНЫЙ ОТДЫХ: ПЛАВАЮЩИЕ ТАЙМИНГИ (АНТИ-БАН)
+            if msgs_found == 200:
+                # Пачка полная -> идем вглубь после рандомного перекура (от 8 до 13 минут)
+                sleep_time = random.uniform(480, 780)
+                await asyncio.sleep(sleep_time)
                 S.queue.put_nowait(link)
-                await asyncio.sleep(600)
-                
+            else:
+                # Дошли до дна -> ждем от 25 до 35 минут
+                sleep_time = random.uniform(1500, 2100)
+                await asyncio.sleep(sleep_time)
+                S.queue.put_nowait(link)
+
+        except FloodWaitError as e:
+            await asyncio.sleep(e.seconds)
+        except ConnectionError:
+            await asyncio.sleep(15)
+        except Exception:
+            await asyncio.sleep(60)
+        finally:
             S.queue.task_done()
-        except Exception as e:
-            await asyncio.sleep(30)
 
-# ══════════════════════════════════════════════════════════════
-# БОТ-ИНТЕРФЕЙС И КНОПКИ
-# ══════════════════════════════════════════════════════════════
-
+# === ИНТЕРФЕЙС БОТА ===
 def get_keyboard():
-    return [
-        [Button.text('🚀 Запуск', resize=True), Button.text('🛑 Стоп')],
-        [Button.text('📦 Выгрузка'), Button.text('📊 Статистика')],
-        [Button.text('➕ Добавить группы'), Button.text('♻️ Очистить базу')]
-    ]
-
-async def export_txt(event):
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute("SELECT * FROM leads ORDER BY category ASC").fetchall()
-    
-    if not rows: return await event.reply("База пуста. Парсер еще ничего не нашел.", buttons=get_keyboard())
-    
-    path = "export_leads.txt"
-    with open(path, "w", encoding="utf-8") as f:
-        for r in rows:
-            contact = f"@{r['username']}" if r['username'] else str(r['user_id'])
-            f.write(f"[{r['category']}] {contact} | {r['real_name']} | {r['trigger_text'].replace('\n', ' ')}\n")
-    
-    await event.reply(f"📦 Собрано {len(rows)} лидов (B2B)", file=path, buttons=get_keyboard())
-    os.remove(path)
+    return [[Button.text('🚀 Запуск'), Button.text('📊 Статистика')], [Button.text('♻️ Очистить базу'), Button.text('➕ Добавить группы')]]
 
 def register_handlers(bot):
-    @bot.on(events.NewMessage(pattern=re.compile(r'^(🚀 Запуск|/start)$', re.I)))
+    @bot.on(events.NewMessage(pattern='/start'))
+    async def _(e): await e.reply("Защищенный терминал активен.", buttons=get_keyboard())
+
+    @bot.on(events.NewMessage(pattern='📊 Статистика'))
     async def _(e):
-        if e.sender_id != ADMIN_ID: return
-        S.waiting_for_links = False
-        if S.is_running: 
-            return await e.reply("Парсер уже работает! ⚙️", buttons=get_keyboard())
-        
-        S.stop_event.clear() 
+        leads = (await db_execute("SELECT COUNT(*) FROM leads", fetchone=True))[0]
+        seen = (await db_execute("SELECT COUNT(*) FROM seen", fetchone=True))[0]
+        bios = (await db_execute("SELECT COUNT(*) FROM user_bios", fetchone=True))[0]
+        await e.reply(f"📊 Статус:\nЛидов: {leads}\nПроверено людей: {seen}\nБиографий в кэше: {bios}\nВ очереди: {S.queue.qsize()}")
+
+    @bot.on(events.NewMessage(pattern='🚀 Запуск'))
+    async def _(e):
+        if S.is_running: return
+        S.is_running = True
+        S.stop_event.clear()
         asyncio.create_task(run_main())
-        await e.reply("🚀 МОЗГОВОЙ ШТУРМ ЗАПУЩЕН! ИИ анализирует каждого.", buttons=get_keyboard())
+        await e.reply("🚀 БРОНЕБОЙНЫЙ РЕЖИМ ЗАПУЩЕН! (Плавающие перекуры включены).")
 
-    @bot.on(events.NewMessage(pattern=re.compile(r'^(🛑 Стоп|/stop)$', re.I)))
+    @bot.on(events.NewMessage(pattern='♻️ Очистить базу'))
     async def _(e):
-        if e.sender_id != ADMIN_ID: return
-        S.waiting_for_links = False
-        if not S.is_running:
-            return await e.reply("Парсер и так стоит на паузе 💤", buttons=get_keyboard())
-        
-        S.stop_event.set() 
-        S.is_running = False
-        
-        while not S.queue.empty():
-            S.queue.get_nowait()
-            S.queue.task_done()
-            
-        await e.reply("🛑 ПАРСЕР ОСТАНОВЛЕН. База и закладки сохранены.", buttons=get_keyboard())
+        await db_execute("DELETE FROM leads")
+        await db_execute("DELETE FROM seen")
+        await db_execute("DELETE FROM bookmarks")
+        # Таблицу user_bios НЕ чистим! Это наш золотой запас.
+        S.leads_total = 0
+        S.seen_total = 0
+        await e.reply("♻️ Очередь и лиды очищены. Кэш профилей сохранен.")
 
-    @bot.on(events.NewMessage(pattern=re.compile(r'^(📦 Выгрузка|/export)$', re.I)))
-    async def _(e): 
-        S.waiting_for_links = False
-        await export_txt(e)
-    
-    @bot.on(events.NewMessage(pattern=re.compile(r'^(📊 Статистика|/stats)$', re.I)))
-    async def _(e):
-        S.waiting_for_links = False
-        with sqlite3.connect(DB_PATH) as conn:
-            hot = conn.execute("SELECT COUNT(*) FROM leads WHERE category='HOT'").fetchone()[0]
-            warm = conn.execute("SELECT COUNT(*) FROM leads WHERE category='WARM'").fetchone()[0]
-            seen = conn.execute("SELECT COUNT(*) FROM seen").fetchone()[0]
-            bookmarks = conn.execute("SELECT COUNT(*) FROM bookmarks").fetchone()[0]
-        await e.reply(f"📊 **АБСОЛЮТНАЯ СТАТИСТИКА:**\n\n🔥 Горячие (HOT): {hot}\n🤔 Под вопросом (WARM): {warm}\n👀 Проверено сообщений: {seen}\n📌 Активных закладок: {bookmarks}\n🔄 В очереди групп: {S.queue.qsize()}", buttons=get_keyboard())
-
-    @bot.on(events.NewMessage(pattern=re.compile(r'^(♻️ Очистить базу|/clear_yes)$', re.I)))
-    async def _(e):
-        S.waiting_for_links = False
-        with sqlite3.connect(DB_PATH) as conn:
-            conn.executescript("DELETE FROM leads; DELETE FROM seen; DELETE FROM bookmarks;")
-        while not S.queue.empty():
-            S.queue.get_nowait()
-            S.queue.task_done()
-        S.leads_session_total = 0
-        S.leads_hot = 0
-        S.leads_warm = 0
-        await e.reply("♻️ БАЗА И ЗАКЛАДКИ ОБНУЛЕНЫ.", buttons=get_keyboard())
-
-    @bot.on(events.NewMessage(pattern=re.compile(r'^(➕ Добавить группы)$', re.I)))
-    async def _(e):
-        if e.sender_id != ADMIN_ID: return
-        S.waiting_for_links = True
-        await e.reply("👇 Отправь мне ссылки на чаты в столбик:", buttons=get_keyboard())
+    @bot.on(events.NewMessage(pattern='➕ Добавить группы'))
+    async def _(e): await e.reply("Пришли ссылки в столбик:")
 
     @bot.on(events.NewMessage())
     async def _(e):
-        if e.sender_id != ADMIN_ID: return
-        
-        text = e.text.strip()
-        buttons_text = ['🚀 Запуск', '🛑 Стоп', '📦 Выгрузка', '📊 Статистика', '♻️ Очистить базу', '➕ Добавить группы', '/start', '/stop', '/export', '/stats', '/clear_yes']
-        
-        if S.waiting_for_links and text not in buttons_text:
-            links = text.split('\n')
-            added_count = 0
-            for link in links:
-                link = link.strip()
-                if link:
-                    S.queue.put_nowait(link)
-                    added_count += 1
-            
-            S.waiting_for_links = False
-            await e.reply(f"✅ Успешно добавлено {added_count} групп в очередь!", buttons=get_keyboard())
-        
-        elif text not in buttons_text:
-            await e.reply("Главное меню Fillers_Beauty:", buttons=get_keyboard())
+        if e.text.startswith('http'):
+            for l in e.text.strip().split('\n'): S.queue.put_nowait(l.strip())
+            await e.reply("✅ Группы добавлены.")
 
 async def run_main():
-    S.is_running = True
-    init_db()
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.executescript("""
+        CREATE TABLE IF NOT EXISTS leads (id INTEGER PRIMARY KEY, user_id INTEGER, bio TEXT, trigger_text TEXT, category TEXT, group_src TEXT, created_at INTEGER); 
+        CREATE TABLE IF NOT EXISTS seen (user_id INTEGER PRIMARY KEY); 
+        CREATE TABLE IF NOT EXISTS bookmarks (link TEXT PRIMARY KEY, last_id INTEGER);
+        CREATE TABLE IF NOT EXISTS user_bios (user_id INTEGER PRIMARY KEY, bio TEXT);
+        """)
     
-    proxies = []
-    if PROXIES_FILE.exists():
-        for line in PROXIES_FILE.read_text().splitlines():
-            p = line.split(':')
-            if len(p) == 4: proxies.append((socks.HTTP, p[0], int(p[1]), True, p[2], p[3]))
-            
-    sessions = list(SESSIONS_DIR.glob("*.session"))
-    tasks = []
-    for i, sess in enumerate(sessions):
-        proxy = proxies[i % len(proxies)] if proxies else None
-        tasks.append(account_worker(sess.stem, sess, proxy))
-        await asyncio.sleep(2)
-        
-    await asyncio.gather(*tasks)
+    sessions = list(Path("sessions").glob("*.session"))
+    for s in sessions: asyncio.create_task(account_worker(s.stem, s))
 
 async def main():
-    init_db()
     S.bot = TelegramClient('bot', API_ID, API_HASH)
     await S.bot.start(bot_token=BOT_TOKEN)
     register_handlers(S.bot)
-    
-    try:
-        await S.bot.send_message(ADMIN_ID, "🔧 Терминал парсера обновлен (Полный контроль ИИ). Готов к работе.", buttons=get_keyboard())
-    except:
-        pass
-        
-    print("🤖 БОТ ЗАПУЩЕН"); await S.bot.run_until_disconnected()
+    await S.bot.run_until_disconnected()
 
 if __name__ == '__main__':
     asyncio.run(main())
