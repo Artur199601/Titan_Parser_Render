@@ -22,7 +22,7 @@ API_ID = 6
 API_HASH = "eb06d4abfb49dc3eeb1aeb98ae0f581e"
 BOT_TOKEN = "8177768255:AAECx4EjWSadym2FAjXEZ7yguP57VI8Cmx0"
 ADMIN_ID = 1568924415
-OPENAI_API_KEY = "ВСТАВЬ_СЮДА_СВОЙ_КЛЮЧ_SK" # <--- НЕ ЗАБУДЬ КЛЮЧ!
+OPENAI_API_KEY = "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" # <--- НЕ ЗАБУДЬ КЛЮЧ!
 
 DB_PATH = Path("leads.db")
 SESSIONS_DIR = Path("sessions")
@@ -416,3 +416,4 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
+
