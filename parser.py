@@ -12,13 +12,19 @@ API_ID = 6
 API_HASH = "eb06d4abfb49dc3eeb1aeb98ae0f581e"
 BOT_TOKEN = "8177768255:AAECx4EjWSadym2FAjXEZ7yguP57VI8Cmx0"
 ADMIN_ID = 1568924415
-OPENAI_API_KEY = "Sk-proj-xshkzyA-CoAp-sqSYP68CJkbkoDQlwe_O24YhFM3cPHcCZIF19au8Gl4QYgWuGnyYL2cKkdcXyT3BlbkFJfkGcb32wVMsxtzErRGgLo-NpgKAxjdUawKLKLl5iORBic_pPqNmeUOG0Cqy5RaKpzVuBV2DY8A"
+
+# ИСПРАВЛЕННЫЙ КЛЮЧ (с маленькой sk-)
+OPENAI_API_KEY = "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"
 
 openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 DB_PATH = "leads.db"
 
-# 🛑 СВЕТОФОР ДЛЯ БАЗЫ ДАННЫХ (Защита от Locked)
+# 🛑 СВЕТОФОР ДЛЯ БАЗЫ ДАННЫХ (Защита от ошибки "database is locked")
 db_lock = asyncio.Lock()
+
+# 🚦 ДИСПЕТЧЕР ОПЕРАТИВНОЙ ПАМЯТИ (Защита сервера от падения/зависания)
+# Разрешаем активно парсить только 5 аккаунтам одновременно. Остальные ждут очереди.
+ram_semaphore = asyncio.Semaphore(5) 
 
 MINUS_WORDS = ["прыщи", "сыпь", "ребенок", "аппарат", "оборудование", "маникюр", "курсы", "аренда", "сдам кабинет"]
 
@@ -35,7 +41,9 @@ async def get_ai_category(text, bio):
             response_format={"type": "json_object"}
         )
         return json.loads(res.choices[0].message.content).get('category', 'TRASH')
-    except: return "TRASH"
+    except Exception as e: 
+        print(f"❌ Ошибка ИИ: {e}")
+        return "TRASH"
 
 class State:
     queue = asyncio.Queue()
@@ -66,86 +74,89 @@ async def account_worker(name, session_path):
     while not S.stop_event.is_set():
         link = await S.queue.get()
         try:
-            # 1. БЕЗОПАСНЫЙ ВХОД В ГРУППУ
-            entity = await client.get_entity(link)
-            if hasattr(entity, 'left') and entity.left:
-                await asyncio.sleep(random.uniform(5, 15)) 
-                try: 
-                    await client(JoinChannelRequest(entity))
-                except UserAlreadyParticipantError: pass
-                except FloodWaitError as e: await asyncio.sleep(e.seconds)
-                except Exception: pass
+            # 👇 ЭСТАФЕТА: ЖДЕМ СВОЕЙ ОЧЕРЕДИ НА ПАМЯТЬ ПЕРЕД РАБОТОЙ 👇
+            async with ram_semaphore:
+                try:
+                    # 1. БЕЗОПАСНЫЙ ВХОД В ГРУППУ
+                    entity = await client.get_entity(link)
+                    if hasattr(entity, 'left') and entity.left:
+                        await asyncio.sleep(random.uniform(5, 15)) 
+                        try: await client(JoinChannelRequest(entity))
+                        except UserAlreadyParticipantError: pass
+                        except FloodWaitError as e: await asyncio.sleep(e.seconds)
+                        except: pass
 
-            # Получаем закладку (глубину)
-            row = await db_execute("SELECT last_id FROM bookmarks WHERE link=?", (link,), fetchone=True)
-            last_id = row[0] if row else 0
+                    # Получаем закладку (глубину)
+                    row = await db_execute("SELECT last_id FROM bookmarks WHERE link=?", (link,), fetchone=True)
+                    last_id = row[0] if row else 0
 
-            msgs_found = 0
-            
-            # 2. ПАРСИМ ГЛУБОКО ВНИЗ (ПО 200 СООБЩЕНИЙ)
-            async for msg in client.iter_messages(entity, limit=200, offset_id=last_id):
-                if S.stop_event.is_set(): break
-                last_id = msg.id
-                msgs_found += 1
-
-                if not msg.sender_id or not msg.text or is_trash(msg.text): continue
-
-                is_seen = await db_execute("SELECT 1 FROM seen WHERE user_id=?", (msg.sender_id,), fetchone=True)
-                if is_seen: continue
-                
-                await db_execute("INSERT OR IGNORE INTO seen VALUES (?)", (msg.sender_id,))
-                S.seen_total += 1
-
-                # 3. УМНЫЙ КЭШ BIO (ЗАЩИТА ОТ БАНА)
-                cached_bio = await db_execute("SELECT bio FROM user_bios WHERE user_id=?", (msg.sender_id,), fetchone=True)
-                if cached_bio is not None:
-                    bio = cached_bio[0]
-                else:
-                    await asyncio.sleep(random.uniform(1.5, 3)) # Легкая антифлуд пауза
-                    try:
-                        full = await client(GetFullUserRequest(msg.sender_id))
-                        bio = full.full_user.about or ""
-                        await db_execute("INSERT INTO user_bios VALUES (?, ?)", (msg.sender_id, bio))
-                    except FloodWaitError as e:
-                        print(f"⚠️ {name} поймал FloodWait. Спим {e.seconds} сек.")
-                        await asyncio.sleep(e.seconds)
-                        bio = ""
-                    except Exception:
-                        bio = ""
-                        await db_execute("INSERT INTO user_bios VALUES (?, ?)", (msg.sender_id, bio))
-
-                # 4. ОТПРАВКА В ИИ
-                cat = await get_ai_category(msg.text, bio)
-                if cat in ['HOT', 'WARM']:
-                    await db_execute("INSERT OR IGNORE INTO leads (user_id, bio, trigger_text, category, group_src, created_at) VALUES (?,?,?,?,?,?)",
-                                    (msg.sender_id, bio, msg.text[:100], cat, link, int(time.time())))
-                    S.leads_total += 1
+                    msgs_found = 0
                     
-                    # 5. ПУЛЬС КАЖДЫЕ 100 ЛИДОВ
-                    if S.leads_total % 100 == 0:
-                        await S.bot.send_message(ADMIN_ID, f"📈 ПУЛЬС: Найдено {S.leads_total} лидов.\nПроверено: {S.seen_total}")
+                    # 2. ПАРСИМ ГЛУБОКО ВНИЗ (ПО 200 СООБЩЕНИЙ)
+                    async for msg in client.iter_messages(entity, limit=200, offset_id=last_id):
+                        if S.stop_event.is_set(): break
+                        last_id = msg.id
+                        msgs_found += 1
 
-            # Сохраняем закладку
-            await db_execute("INSERT OR REPLACE INTO bookmarks (link, last_id) VALUES (?, ?)", (link, last_id))
+                        if not msg.sender_id or not msg.text or is_trash(msg.text): continue
 
-            # 6. УМНЫЙ ОТДЫХ: ПЛАВАЮЩИЕ ТАЙМИНГИ (АНТИ-БАН)
-            if msgs_found == 200:
-                # Пачка полная -> идем вглубь после рандомного перекура (от 8 до 13 минут)
-                sleep_time = random.uniform(480, 780)
-                await asyncio.sleep(sleep_time)
-                S.queue.put_nowait(link)
-            else:
-                # Дошли до дна -> ждем от 25 до 35 минут
-                sleep_time = random.uniform(1500, 2100)
-                await asyncio.sleep(sleep_time)
-                S.queue.put_nowait(link)
+                        is_seen = await db_execute("SELECT 1 FROM seen WHERE user_id=?", (msg.sender_id,), fetchone=True)
+                        if is_seen: continue
+                        
+                        await db_execute("INSERT OR IGNORE INTO seen VALUES (?)", (msg.sender_id,))
+                        S.seen_total += 1
 
-        except FloodWaitError as e:
-            await asyncio.sleep(e.seconds)
-        except ConnectionError:
-            await asyncio.sleep(15)
-        except Exception:
-            await asyncio.sleep(60)
+                        # 3. УМНЫЙ КЭШ BIO (ЗАЩИТА ОТ БАНА)
+                        cached_bio = await db_execute("SELECT bio FROM user_bios WHERE user_id=?", (msg.sender_id,), fetchone=True)
+                        if cached_bio is not None:
+                            bio = cached_bio[0]
+                        else:
+                            await asyncio.sleep(random.uniform(1.5, 3)) # Легкая антифлуд пауза
+                            try:
+                                full = await client(GetFullUserRequest(msg.sender_id))
+                                bio = full.full_user.about or ""
+                                await db_execute("INSERT INTO user_bios VALUES (?, ?)", (msg.sender_id, bio))
+                            except FloodWaitError as e:
+                                print(f"⚠️ {name} поймал FloodWait. Спим {e.seconds} сек.")
+                                await asyncio.sleep(e.seconds)
+                                bio = ""
+                            except:
+                                bio = ""
+                                await db_execute("INSERT INTO user_bios VALUES (?, ?)", (msg.sender_id, bio))
+
+                        # 4. ОТПРАВКА В ИИ
+                        cat = await get_ai_category(msg.text, bio)
+                        if cat in ['HOT', 'WARM']:
+                            await db_execute("INSERT OR IGNORE INTO leads (user_id, bio, trigger_text, category, group_src, created_at) VALUES (?,?,?,?,?,?)",
+                                            (msg.sender_id, bio, msg.text[:100], cat, link, int(time.time())))
+                            S.leads_total += 1
+                            
+                            # 5. ПУЛЬС КАЖДЫЕ 100 ЛИДОВ
+                            if S.leads_total % 100 == 0:
+                                await S.bot.send_message(ADMIN_ID, f"📈 ПУЛЬС: Найдено {S.leads_total} лидов.\nПроверено: {S.seen_total}")
+
+                    # Сохраняем закладку
+                    await db_execute("INSERT OR REPLACE INTO bookmarks (link, last_id) VALUES (?, ?)", (link, last_id))
+
+                    # 6. УМНЫЙ ОТДЫХ: ПЛАВАЮЩИЕ ТАЙМИНГИ
+                    if msgs_found == 200:
+                        # Пачка полная -> идем вглубь после рандомного перекура (от 8 до 13 минут)
+                        sleep_time = random.uniform(480, 780)
+                        await asyncio.sleep(sleep_time)
+                        S.queue.put_nowait(link)
+                    else:
+                        # Дошли до дна -> ждем от 25 до 35 минут
+                        sleep_time = random.uniform(1500, 2100)
+                        await asyncio.sleep(sleep_time)
+                        S.queue.put_nowait(link)
+
+                except FloodWaitError as e:
+                    await asyncio.sleep(e.seconds)
+                except ConnectionError:
+                    await asyncio.sleep(15)
+                except Exception:
+                    await asyncio.sleep(60)
+
         finally:
             S.queue.task_done()
 
@@ -170,7 +181,7 @@ def register_handlers(bot):
         S.is_running = True
         S.stop_event.clear()
         asyncio.create_task(run_main())
-        await e.reply("🚀 БРОНЕБОЙНЫЙ РЕЖИМ ЗАПУЩЕН! (Плавающие перекуры включены).")
+        await e.reply("🚀 БРОНЕБОЙНЫЙ РЕЖИМ ЗАПУЩЕН! (Диспетчер памяти включен).")
 
     @bot.on(events.NewMessage(pattern='♻️ Очистить базу'))
     async def _(e):
