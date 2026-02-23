@@ -22,7 +22,7 @@ from openai import AsyncOpenAI
 
 API_ID = 6
 API_HASH = "eb06d4abfb49dc3eeb1aeb98ae0f581e"
-BOT_TOKEN = "8177768255:AAECx4EjWSadym2FAjXEZ7yguP57VI8Cmx0"
+BOT_TOKEN = "8177768255:AAFJUXEx0jynaJz9frqGJvRJRwpcULDVRNw"
 ADMIN_ID = 1568924415
 # Ключ исправлен (маленькая sk-)
 OPENAI_API_KEY = "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"
