@@ -5,6 +5,7 @@ import random
 import sqlite3
 import json
 import time
+import gc # 👇 ДОБАВЛЕНО: Сборщик мусора
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -27,7 +28,9 @@ ADMIN_ID = 1568924415
 # Ключ исправлен (маленькая sk-)
 OPENAI_API_KEY = "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"
 
-DB_PATH = Path("leads.db")
+# 👇 ДОБАВЛЕНО: Путь к защищенному диску (если он есть)
+DB_PATH = Path("/data/leads.db") if os.path.exists("/data") else Path("leads.db")
+
 SESSIONS_DIR = Path("sessions")
 PROXIES_FILE = Path("proxies.txt")
 BATCH_SIZE = 150  
@@ -306,6 +309,7 @@ async def account_worker(name, session_path, proxy):
 
             # 👇 ТУТ СЕМАФОР ОТПУСКАЕТСЯ. Аккаунт курит, сервер отдыхает.
             if not S.stop_event.is_set():
+                gc.collect() # 👇 ДОБАВЛЕНО: Жесткая очистка мусора из памяти
                 if messages_processed == BATCH_SIZE:
                     await asyncio.sleep(random.uniform(480, 780)) # ~10 минут
                     S.queue.put_nowait(link)
