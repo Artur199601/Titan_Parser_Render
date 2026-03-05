@@ -1,3 +1,4 @@
+cat > /root/Titan_Parser_Render/parser.py << ‘ENDOFFILE’
 import os
 import re
 import asyncio
@@ -61,8 +62,8 @@ PLUS_WORDS = [
 def hard_filter(text: str, username: str, bio: str) -> tuple:
 clean_text = (
 text.lower()
-.replace(‘a’, ‘а’).replace(‘o’, ‘о’).replace(‘e’, ‘е’)
-.replace(‘c’, ‘с’).replace(‘p’, ‘р’).replace(‘x’, ‘х’)
+.replace(’”’”‘a’”’”’, ‘”’”‘а’”’”’).replace(’”’”‘o’”’”’, ‘”’”‘о’”’”’).replace(’”’”‘e’”’”’, ‘”’”‘е’”’”’)
+.replace(’”’”‘c’”’”’, ‘”’”‘с’”’”’).replace(’”’”‘p’”’”’, ‘”’”‘р’”’”’).replace(’”’”‘x’”’”’, ‘”’”‘х’”’”’)
 )
 clean_bio = bio.lower()
 clean_user = username.lower()
@@ -72,10 +73,10 @@ text_check = clean_text + “ “ + clean_user
 if any(m in text_check for m in MINUS_WORDS):
     return "TRASH", "Мусор по словарю"
 
-words = re.findall(r'\b\w+\b', clean_text)
+words = re.findall(r'"'"'\b\w+\b'"'"', clean_text)
 full_profile = f"{clean_text} {clean_user} {clean_bio}"
 if len(words) <= 5 or (
-    len(words) <= 1 and any(char in text for char in ['+', '👍', '🔥', '❤️'])
+    len(words) <= 1 and any(char in text for char in ['"'"'+'"'"', '"'"'👍'"'"', '"'"'🔥'"'"', '"'"'❤️'"'"'])
 ):
     if not any(p in full_profile for p in PLUS_WORDS):
         return "TRASH", "Флуд без признаков ЦА"
@@ -85,13 +86,13 @@ return None, None
 
 AI_PROMPT = (
 “Ты — аналитик B2B-продаж. Ищи косметологов-инъекционистов. “
-‘Ответь строго в JSON: {“thought_process”: “…”, “category”: “HOT”}’
+‘”’”‘Ответь строго в JSON: {“thought_process”: “…”, “category”: “HOT”}’”’”’
 )
 
 async def get_ai_category(profile: dict) -> dict:
 try:
 prompt = AI_PROMPT + (
-f”\nName: {profile[‘name’]}, Bio: {profile[‘bio’]}, Msg: {profile[‘messages’]}”
+f”\nName: {profile[’”’”‘name’”’”’]}, Bio: {profile[’”’”‘bio’”’”’]}, Msg: {profile[’”’”‘messages’”’”’]}”
 )
 response = await openai_client.chat.completions.create(
 model=“gpt-4o-mini”,
@@ -158,8 +159,8 @@ return
 
 ```
 uid = user_obj.id
-username = user_obj.username or ''
-name = f"{user_obj.first_name or ''} {user_obj.last_name or ''}".strip()
+username = user_obj.username or '"'"''"'"'
+name = f"{user_obj.first_name or '"'"''"'"'} {user_obj.last_name or '"'"''"'"'}".strip()
 trigger_text = messages[0] if messages else ""
 bio = ""
 
@@ -194,10 +195,10 @@ if category is None:
         "bio": bio,
         "messages": messages
     })
-    category = res.get('category', 'TRASH').upper()
-    reason = f"ИИ: {res.get('thought_process', '')[:100]}"
+    category = res.get('"'"'category'"'"', '"'"'TRASH'"'"').upper()
+    reason = f"ИИ: {res.get('"'"'thought_process'"'"', '"'"''"'"')[:100]}"
 
-if category in ['HOT', 'WARM']:
+if category in ['"'"'HOT'"'"', '"'"'WARM'"'"']:
     async with db_lock:
         with sqlite3.connect(DB_PATH, timeout=30) as conn:
             try:
@@ -208,7 +209,7 @@ if category in ['HOT', 'WARM']:
                 )
                 conn.commit()
                 S.leads_session_total += 1
-                if category == 'HOT':
+                if category == '"'"'HOT'"'"':
                     S.leads_hot += 1
                 else:
                     S.leads_warm += 1
@@ -251,7 +252,7 @@ try:
             entity = None
             try:
                 entity = await client.get_entity(link)
-                if hasattr(entity, 'left') and entity.left:
+                if hasattr(entity, '"'"'left'"'"') and entity.left:
                     await client(JoinChannelRequest(entity))
             except Exception as e:
                 print(f"[{name}] Ошибка получения группы {link}: {e}")
@@ -329,9 +330,9 @@ finally:
 
 def get_keyboard():
 return [
-[Button.text(‘🚀 Запуск’), Button.text(‘🛑 Стоп’)],
-[Button.text(‘📦 Выгрузка’), Button.text(‘📊 Статистика’)],
-[Button.text(‘➕ Добавить группы’), Button.text(‘♻️ Очистить базу’)]
+[Button.text(’”’”‘🚀 Запуск’”’”’), Button.text(’”’”‘🛑 Стоп’”’”’)],
+[Button.text(’”’”‘📦 Выгрузка’”’”’), Button.text(’”’”‘📊 Статистика’”’”’)],
+[Button.text(’”’”‘➕ Добавить группы’”’”’), Button.text(’”’”‘♻️ Очистить базу’”’”’)]
 ]
 
 async def export_txt(event):
@@ -349,9 +350,9 @@ if not rows:
 path = "export_leads.txt"
 with open(path, "w", encoding="utf-8") as f:
     for r in rows:
-        contact = f"@{r['username']}" if r['username'] else str(r['user_id'])
-        clean_msg = str(r['trigger_text']).replace('\n', ' ')
-        f.write(f"[{r['category']}] {contact} | {r['real_name']} | {clean_msg}\n")
+        contact = f"@{r['"'"'username'"'"']}" if r['"'"'username'"'"'] else str(r['"'"'user_id'"'"'])
+        clean_msg = str(r['"'"'trigger_text'"'"']).replace('"'"'\n'"'"', '"'"' '"'"')
+        f.write(f"[{r['"'"'category'"'"']}] {contact} | {r['"'"'real_name'"'"']} | {clean_msg}\n")
 
 await event.reply(f"📦 Собрано {len(rows)} лидов", file=path, buttons=get_keyboard())
 if os.path.exists(path):
@@ -361,7 +362,7 @@ if os.path.exists(path):
 def register_handlers(bot):
 
 ```
-@bot.on(events.NewMessage(pattern=re.compile(r'^(🚀 Запуск|/start)$', re.I)))
+@bot.on(events.NewMessage(pattern=re.compile(r'"'"'^(🚀 Запуск|/start)$'"'"', re.I)))
 async def _(e):
     if e.sender_id != ADMIN_ID:
         return
@@ -372,7 +373,7 @@ async def _(e):
     asyncio.create_task(run_main())
     await e.reply("🚀 ЗАПУЩЕНО!", buttons=get_keyboard())
 
-@bot.on(events.NewMessage(pattern=re.compile(r'^(🛑 Стоп|/stop)$', re.I)))
+@bot.on(events.NewMessage(pattern=re.compile(r'"'"'^(🛑 Стоп|/stop)$'"'"', re.I)))
 async def _(e):
     if e.sender_id != ADMIN_ID:
         return
@@ -380,19 +381,19 @@ async def _(e):
     S.is_running = False
     await e.reply("🛑 ОСТАНОВЛЕНО.", buttons=get_keyboard())
 
-@bot.on(events.NewMessage(pattern=re.compile(r'^(📦 Выгрузка|/export)$', re.I)))
+@bot.on(events.NewMessage(pattern=re.compile(r'"'"'^(📦 Выгрузка|/export)$'"'"', re.I)))
 async def _(e):
     await export_txt(e)
 
-@bot.on(events.NewMessage(pattern=re.compile(r'^(📊 Статистика|/stats)$', re.I)))
+@bot.on(events.NewMessage(pattern=re.compile(r'"'"'^(📊 Статистика|/stats)$'"'"', re.I)))
 async def _(e):
     async with db_lock:
         with sqlite3.connect(DB_PATH, timeout=30) as conn:
             hot = conn.execute(
-                "SELECT COUNT(*) FROM leads WHERE category='HOT'"
+                "SELECT COUNT(*) FROM leads WHERE category='"'"'HOT'"'"'"
             ).fetchone()[0]
             warm = conn.execute(
-                "SELECT COUNT(*) FROM leads WHERE category='WARM'"
+                "SELECT COUNT(*) FROM leads WHERE category='"'"'WARM'"'"'"
             ).fetchone()[0]
             seen = conn.execute(
                 "SELECT COUNT(*) FROM seen"
@@ -404,7 +405,7 @@ async def _(e):
         buttons=get_keyboard()
     )
 
-@bot.on(events.NewMessage(pattern=re.compile(r'^(♻️ Очистить базу|/clear_yes)$', re.I)))
+@bot.on(events.NewMessage(pattern=re.compile(r'"'"'^(♻️ Очистить базу|/clear_yes)$'"'"', re.I)))
 async def _(e):
     if e.sender_id != ADMIN_ID:
         return
@@ -418,7 +419,7 @@ async def _(e):
     S.leads_warm = 0
     await e.reply("♻️ ОЧИЩЕНО.", buttons=get_keyboard())
 
-@bot.on(events.NewMessage(pattern=re.compile(r'^(➕ Добавить группы)$', re.I)))
+@bot.on(events.NewMessage(pattern=re.compile(r'"'"'^(➕ Добавить группы)$'"'"', re.I)))
 async def _(e):
     if e.sender_id != ADMIN_ID:
         return
@@ -429,9 +430,9 @@ async def _(e):
 async def _(e):
     if e.sender_id != ADMIN_ID:
         return
-    if S.waiting_for_links and not e.text.startswith('/'):
+    if S.waiting_for_links and not e.text.startswith('"'"'/'"'"'):
         added = 0
-        for link in e.text.split('\n'):
+        for link in e.text.split('"'"'\n'"'"'):
             link = link.strip()
             if link:
                 S.queue.put_nowait(link)
@@ -468,7 +469,7 @@ async def main():
 init_db()
 
 ```
-S.bot = TelegramClient('bot', API_ID, API_HASH)
+S.bot = TelegramClient('"'"'bot'"'"', API_ID, API_HASH)
 await S.bot.start(bot_token=BOT_TOKEN)
 register_handlers(S.bot)
 
@@ -499,5 +500,7 @@ finally:
     print("🛑 Бот остановлен.")
 ```
 
-if **name** == ‘**main**’:
+if **name** == ‘”’”’**main**’”’”’:
 asyncio.run(main())
+
+ENDOFFILE
