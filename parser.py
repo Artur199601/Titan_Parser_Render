@@ -38,7 +38,7 @@ db_lock = asyncio.Lock()
 ram_semaphore = asyncio.Semaphore(10) 
 
 # ══════════════════════════════════════════════════════════════
-# СЛОВАРИ (БЕЗ ИЗМЕНЕНИЙ)
+# ФИЛЬТРЫ И ИИ
 # ══════════════════════════════════════════════════════════════
 
 MINUS_WORDS = ["эстет", "эстетист", "эстетика", "аппаратная", "аппаратный", "аппаратка", "массаж", "чистка лица", "smas", "lpg", "rf-лифтинг", "лазер", "эпиляция", "маникюр", "ногти", "брови", "ресницы", "парикмахер", "визажист", "тату", "перманент", "шугаринг", "смм", "маркетолог", "таргетолог", "заработок", "крипта"]
@@ -58,9 +58,7 @@ def hard_filter(text: str, username: str, bio: str) -> tuple:
             return "TRASH", "Флуд без признаков ЦА"
     return None, None
 
-AI_PROMPT = """Ты — аналитик B2B-продаж. Ищи косметологов-инъекционистов.
-Категории: HOT (прямой запрос), WARM (проф. обсуждение), TRASH (пациенты/мусор).
-Ответь строго в JSON: {"thought_process": "...", "category": "HOT"}"""
+AI_PROMPT = """Ты — аналитик B2B-продаж. Ищи косметологов-инъекционистов. Ответь строго в JSON: {"thought_process": "...", "category": "HOT"}"""
 
 async def get_ai_category(profile: dict) -> dict:
     try:
@@ -75,7 +73,7 @@ async def get_ai_category(profile: dict) -> dict:
     except Exception: return {"category": "TRASH", "thought_process": "error"}
 
 # ══════════════════════════════════════════════════════════════
-# ЯДРО
+# ЯДРО ПАРСЕРА
 # ══════════════════════════════════════════════════════════════
 
 class State:
@@ -186,7 +184,7 @@ async def account_worker(name, session_path, proxy):
         except: await asyncio.sleep(10)
 
 # ══════════════════════════════════════════════════════════════
-# ИНТЕРФЕЙС
+# ИНТЕРФЕЙС И ОБРАБОТЧИКИ
 # ══════════════════════════════════════════════════════════════
 
 def get_keyboard():
@@ -202,14 +200,15 @@ async def export_txt(event):
     with open(path, "w", encoding="utf-8") as f:
         for r in rows:
             contact = f"@{r['username']}" if r['username'] else str(r['user_id'])
-            # ИСПРАВЛЕНО: Нет слэшей в f-строке
+            # Исправлено: замена переноса строки вынесена из f-строки
             clean_msg = str(r['trigger_text']).replace('\n', ' ')
             f.write(f"[{r['category']}] {contact} | {r['real_name']} | {clean_msg}\n")
-    # ИСПРАВЛЕНО: Ровные отступы
+    # Исправлено: выровнены отступы
     await event.reply(f"📦 Собрано {len(rows)} лидов", file=path, buttons=get_keyboard())
     if os.path.exists(path): os.remove(path)
 
 def register_handlers(bot):
+    # Исправлено: все функции теперь 'async def', чтобы не было ошибок SyntaxError 'async with'
     @bot.on(events.NewMessage(pattern=re.compile(r'^(🚀 Запуск|/start)$', re.I)))
     async def _(e):
         if e.sender_id != ADMIN_ID: return
