@@ -376,29 +376,32 @@ async def export_txt(event):
     with open(path, "w", encoding="utf-8") as f:
         for r in rows:
             contact = f"@{r['username']}" if r['username'] else str(r['user_id'])
-            f.write(f"[{r['category']}] {contact} | {r['real_name']} | {r['trigger_text'].replace('\n', ' ')}\n")
+            # ИСПРАВЛЕНИЕ: Вынесли замену переноса строки из f-строки
+            trigger_cleaned = r['trigger_text'].replace('\n', ' ')
+            f.write(f"[{r['category']}] {contact} | {r['real_name']} | {trigger_cleaned}\n")
     
+    # ИСПРАВЛЕНИЕ: Выровняли отступы (4 пробела)
     await event.reply(f"📦 Собрано {len(rows)} лидов (B2B)", file=path, buttons=get_keyboard())
     os.remove(path)
 
 def register_handlers(bot):
     @bot.on(events.NewMessage(pattern=re.compile(r'^(🚀 Запуск|/start)$', re.I)))
-    async def _(e):
+    def _(e):
         if e.sender_id != ADMIN_ID: return
         S.waiting_for_links = False
         if S.is_running: 
-            return await e.reply("Парсер уже работает! ⚙️", buttons=get_keyboard())
+            return e.reply("Парсер уже работает! ⚙️", buttons=get_keyboard())
         
         S.stop_event.clear() 
         asyncio.create_task(run_main())
-        await e.reply("🚀 МОЗГОВОЙ ШТУРМ ЗАПУЩЕН! ИИ анализирует каждого.", buttons=get_keyboard())
+        e.reply("🚀 МОЗГОВОЙ ШТУРМ ЗАПУЩЕН! ИИ анализирует каждого.", buttons=get_keyboard())
 
     @bot.on(events.NewMessage(pattern=re.compile(r'^(🛑 Стоп|/stop)$', re.I)))
-    async def _(e):
+    def _(e):
         if e.sender_id != ADMIN_ID: return
         S.waiting_for_links = False
         if not S.is_running:
-            return await e.reply("Парсер и так стоит на паузе 💤", buttons=get_keyboard())
+            return e.reply("Парсер и так стоит на паузе 💤", buttons=get_keyboard())
         
         S.stop_event.set() 
         S.is_running = False
@@ -407,15 +410,15 @@ def register_handlers(bot):
             S.queue.get_nowait()
             S.queue.task_done()
             
-        await e.reply("🛑 ПАРСЕР ОСТАНОВЛЕН. База и закладки сохранены.", buttons=get_keyboard())
+        e.reply("🛑 ПАРСЕР ОСТАНОВЛЕН. База и закладки сохранены.", buttons=get_keyboard())
 
     @bot.on(events.NewMessage(pattern=re.compile(r'^(📦 Выгрузка|/export)$', re.I)))
-    async def _(e): 
+    def _(e): 
         S.waiting_for_links = False
-        await export_txt(e)
+        asyncio.create_task(export_txt(e))
     
     @bot.on(events.NewMessage(pattern=re.compile(r'^(📊 Статистика|/stats)$', re.I)))
-    async def _(e):
+    def _(e):
         S.waiting_for_links = False
         async with db_lock:
             with sqlite3.connect(DB_PATH, timeout=30) as conn:
@@ -423,10 +426,10 @@ def register_handlers(bot):
                 warm = conn.execute("SELECT COUNT(*) FROM leads WHERE category='WARM'").fetchone()[0]
                 seen = conn.execute("SELECT COUNT(*) FROM seen").fetchone()[0]
                 bookmarks = conn.execute("SELECT COUNT(*) FROM bookmarks").fetchone()[0]
-        await e.reply(f"📊 **АБСОЛЮТНАЯ СТАТИСТИКА:**\n\n🔥 Горячие (HOT): {hot}\n🤔 Под вопросом (WARM): {warm}\n👀 Проверено сообщений: {seen}\n📌 Активных закладок: {bookmarks}\n🔄 В очереди групп: {S.queue.qsize()}", buttons=get_keyboard())
+        e.reply(f"📊 **АБСОЛЮТНАЯ СТАТИСТИКА:**\n\n🔥 Горячие (HOT): {hot}\n🤔 Под вопросом (WARM): {warm}\n👀 Проверено сообщений: {seen}\n📌 Активных закладок: {bookmarks}\n🔄 В очереди групп: {S.queue.qsize()}", buttons=get_keyboard())
 
     @bot.on(events.NewMessage(pattern=re.compile(r'^(♻️ Очистить базу|/clear_yes)$', re.I)))
-    async def _(e):
+    def _(e):
         S.waiting_for_links = False
         async with db_lock:
             with sqlite3.connect(DB_PATH, timeout=30) as conn:
@@ -437,16 +440,16 @@ def register_handlers(bot):
         S.leads_session_total = 0
         S.leads_hot = 0
         S.leads_warm = 0
-        await e.reply("♻️ БАЗА И ЗАКЛАДКИ ОБНУЛЕНЫ.", buttons=get_keyboard())
+        e.reply("♻️ БАЗА И ЗАКЛАДКИ ОБНУЛЕНЫ.", buttons=get_keyboard())
 
     @bot.on(events.NewMessage(pattern=re.compile(r'^(➕ Добавить группы)$', re.I)))
-    async def _(e):
+    def _(e):
         if e.sender_id != ADMIN_ID: return
         S.waiting_for_links = True
-        await e.reply("👇 Отправь мне ссылки на чаты в столбик:", buttons=get_keyboard())
+        e.reply("👇 Отправь мне ссылки на чаты в столбик:", buttons=get_keyboard())
 
     @bot.on(events.NewMessage())
-    async def _(e):
+    def _(e):
         if e.sender_id != ADMIN_ID: return
         
         text = e.text.strip()
@@ -462,10 +465,10 @@ def register_handlers(bot):
                     added_count += 1
             
             S.waiting_for_links = False
-            await e.reply(f"✅ Успешно добавлено {added_count} групп в очередь!", buttons=get_keyboard())
+            e.reply(f"✅ Успешно добавлено {added_count} групп в очередь!", buttons=get_keyboard())
         
         elif text not in buttons_text:
-            await e.reply("Главное меню Fillers_Beauty:", buttons=get_keyboard())
+            e.reply("Главное меню Fillers_Beauty:", buttons=get_keyboard())
 
 async def run_main():
     S.is_running = True
